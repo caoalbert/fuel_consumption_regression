@@ -1,0 +1,125 @@
+# Import Data & Data Cleaning
+
+## Load required libraries
+
+```{r}
+library(tidyverse)
+library(plm)
+library(readxl)
+```
+
+## EDA
+
+```{r}
+dt<- read_xlsx('fuel_df.xlsx') %>%
+    select(AIRCRAFT_TYPE, ln_AIR_FUELS_ISSUED, 
+         ln_DEPARTURES_SCHEDULED, ln_AIR_TIME, 
+         ln_fuel_price, time) %>%
+  group_by(AIRCRAFT_TYPE) %>%
+  summarise(n=n())
+```
+
+## Data Cleaning
+
+```{r}
+# Load the data set and recode aircraft types
+df<- read_xlsx('all_flights_fuel.xlsx') %>%
+  select(AIRCRAFT_TYPE, `ln_Fuel(gallon)`, 
+         ln_Number_of_flights, ln_airborne_hours, 
+         ln_fuel_price, time) %>%
+  mutate(AIRCRAFT_TYPE=recode(AIRCRAFT_TYPE, '612'='B737-700', '614'='B737-800', '622'='B757-200', '694'='A320', '696'='A332','819'='B744', '673'='E175', '721'='A321','634'='B739','627'='B777','637'='B777'))
+
+# Load ppi data and recode the month into quarters and calculate the inflation rate (ratio)
+ppi<- read_csv('ppi.csv') %>%
+  pivot_longer(-Year, names_to = 'Month', values_to = 'ppi') %>%
+  mutate(quarter=ifelse(Month %in% c('Jan', 'Feb', 'Mar'), 'Q1', 
+                        ifelse(Month %in% c('Apr', 'May', 'Jun'), 'Q2',
+                               ifelse(Month %in% c('Jul', 'Aug', 'Sep'), 'Q3', 'Q4')))) %>%
+  group_by(Year, quarter) %>%
+  summarise(ppi=mean(ppi)) %>%
+  arrange(Year, quarter) %>%
+  ungroup() %>%
+  mutate(time=row_number(),
+         ratio=ppi/173)
+
+# Load fuel price
+fuel_price<- read_xlsx('all_flights_fuel.xlsx') %>% 
+  select(time,`ln_Average_Fuel_Price (Dollar per gallon)`) %>%
+  unique()
+
+# Merge all data set together and calculate the aggregated y and x variables
+aggregated_data <- df %>%
+  group_by(AIRCRAFT_TYPE, time) %>%
+  summarize(
+    `ln_Fuel(gallon)` = log(sum(exp(`ln_Fuel(gallon)`))),
+    `ln_Number_of_flights` =  log(sum(exp(`ln_Number_of_flights`))),
+    `ln_airborne_hours` = log(sum(exp(`ln_airborne_hours`)))) %>%
+  ungroup() %>%
+  left_join(fuel_price, by='time') %>%
+  left_join(ppi %>% select(time, ratio), 'time') %>%
+  mutate(`ln_Average_Fuel_Price (Dollar per gallon)` = log(exp(`ln_Average_Fuel_Price (Dollar per gallon)`) / ratio))
+
+# Recode column names
+colnames(aggregated_data)<- c('aircraft_type', 'time', 'ln_fuel', 'ln_number_of_flights', 'ln_airborne_hours', 'fp', 'ln_average_fuel_price', 'ratio')
+
+# Create lag for fuel price
+for(i in 1:8){
+  ln_fuel_i<- aggregated_data %>%
+    mutate(time=time+i, fpt=ln_average_fuel_price) %>%
+    select(aircraft_type, time, fpt)
+  
+  aggregated_data<- aggregated_data %>% 
+    left_join(ln_fuel_i, by=c('aircraft_type','time'))
+}
+
+aggregated_data<- aggregated_data %>%
+  mutate(quater = ifelse(time%%4==0, 4, time%%4))
+colnames(aggregated_data)[9:length(colnames(aggregated_data))-1] <- unlist(lapply(1:8, function(x) paste0('fuel_price_t_minus_', x)))
+
+# Create lag for x and y
+lead<- dplyr::lead
+lag<- dplyr::lag
+aggregated_data_change<- aggregated_data %>%
+  group_by(aircraft_type) %>%
+  mutate(ln_fuel_change = exp(ln_fuel) - exp(lag(ln_fuel)),
+         ln_num_of_flights_change = exp(ln_number_of_flights) - exp(lag(ln_number_of_flights)),
+         ln_airborne_hours_change = exp(ln_airborne_hours) - exp(lag(ln_airborne_hours)),
+         ln_average_fuel_price_change = exp(ln_average_fuel_price) - lag(lead(ln_average_fuel_price)))
+```
+
+
+# Regression
+
+```{r}
+# plm data package
+panel_df<- pdata.frame(aggregated_data, index=c('aircraft_type', 'time'))
+formula<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + fuel_price_t_minus_4
+m1<- plm(formula = formula, data=panel_df, effect='individual')
+summary(m1)
+
+
+
+# regression with interaction
+formula2<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours  + aircraft_type + aircraft_type * ln_average_fuel_price
+m2<- lm(formula = formula2, data=aggregated_data_change)
+summary(m2)
+
+# regression without interaction
+formula3<- ln_fuel_change ~ ln_number_of_flights + ln_airborne_hours_change + ln_average_fuel_price + aircraft_type 
+m3<- lm(formula = formula3, data=aggregated_data_change)
+summary(m3)
+```
+
+
+### take out the uninteracted term
+### add airline effect
+  
+
+
+
+
+
+
+
+
+

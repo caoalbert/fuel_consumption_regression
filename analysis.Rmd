@@ -1,0 +1,74 @@
+
+
+# Import Data
+
+```{r}
+library(tidyverse)
+library(plm)
+library(readxl)
+
+df<- read_xlsx('all_flights.xlsx') %>%
+  select(AIRCRAFT_TYPE, `ln_Fuel(gallon)`, 
+         ln_Number_of_flights, ln_airborne_hours, 
+         ln_fuel_price, time) %>%
+  mutate(AIRCRAFT_TYPE=recode(AIRCRAFT_TYPE, '612'='B737-700', '614'='B737-800', '622'='B757-200', '694'='A320', '696'='A332','819'='B744'))
+```
+
+
+```{r}
+aggregated_data <- aggregate(. ~ AIRCRAFT_TYPE + time, data = df, FUN = mean)
+
+ln_fuel_price <- df %>% 
+  group_by(AIRCRAFT_TYPE, time) %>%
+  summarize(mean_fuel_price=mean(ln_fuel_price, na.rm=T))
+
+
+
+for(i in 1:8){
+  ln_fuel_i<- ln_fuel_price %>%
+    mutate(time=time+i)
+  aggregated_data<- aggregated_data %>% left_join(ln_fuel_i, by=c('AIRCRAFT_TYPE','time'))
+  
+}
+colnames(aggregated_data)[7:length(colnames(aggregated_data))] <- unlist(lapply(1:8, function(x) paste0('fuel_price_t_minus_', x)))
+
+```
+
+
+
+# Regression
+
+```{r}
+panel_df<- pdata.frame(aggregated_data, index=c('AIRCRAFT_TYPE', 'time'))
+
+m1<- plm(`ln_Fuel.gallon.`~ln_Number_of_flights+ln_airborne_hours+ln_fuel_price, data=panel_df, model = 'within', effect='twoways')
+
+m1_gls<- pggls(`ln_Fuel.gallon.`~ln_Number_of_flights+ln_airborne_hours+exp(ln_fuel_price), data=panel_df, model = 'within', effect='individual')
+
+m1_random<- plm(`ln_Fuel.gallon.`~ln_Number_of_flights+ln_airborne_hours+exp(ln_fuel_price), data=panel_df, model = 'random', effect='twoways')
+
+
+m2<- lm(`ln_Fuel(gallon)`~ln_Number_of_flights+ln_airborne_hours+exp(ln_fuel_price)+as.factor(time)+as.factor(AIRCRAFT_TYPE), data=aggregated_data)
+
+m3<- pggls(formula, panel_df)
+
+```
+
+
+```{r}
+formula<- `ln_Fuel.gallon.`~ln_Number_of_flights+ln_airborne_hours+ln_fuel_price
+
+# Unobserved effects Wooldrige (2002)
+pwtest(formula, data=panel_df)
+
+
+# Test for serial correlation
+pbgtest(m1, order = 2)
+```
+
+
+```{r}
+library(nlme)
+gls_ttest <- gls(`ln_Fuel.gallon.`~ln_Number_of_flights+ln_airborne_hours+exp(ln_fuel_price), weights = varIdent(form = ~ 1 | AIRCRAFT_TYPE * time), data = panel_df)
+
+```
