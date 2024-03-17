@@ -17,11 +17,16 @@ library(car)
 ## Data Cleaning
 
 ```{r}
-df<- read_xlsx('Merging data- Py/database2010_2019_Febcorrect2.xlsx') %>%
+df<- read_xlsx('database2010_2019_Febcorrect3.xlsx') %>%
         select(AIRCRAFT_TYPE, ln_AIR_FUELS_ISSUED,
         ln_DEPARTURES_SCHEDULED, ln_AIR_TIME, ln_DISTANCE,
         time, AIRLINE_ID) %>%
-  dplyr::mutate(AIRCRAFT_TYPE=dplyr::recode(AIRCRAFT_TYPE, '612'='B737-700', '614'='B737-800', '634'='B737-900','698'='A319', '694'='A320', '622'='B757-200','626'='B767-300', '627'='B777','637'='B777'))
+  dplyr::mutate(AIRCRAFT_TYPE=dplyr::recode(AIRCRAFT_TYPE, '612'='B737-700', '614'='B737-800', '634'='B737-900','698'='A319', '694'='A320', '622'='B757-200','626'='B767-300', '627'='B777','637'='B777')) %>%
+  group_by(AIRCRAFT_TYPE, time, AIRLINE_ID) %>%
+  summarise(ln_AIR_FUELS_ISSUED = log(sum(exp(ln_AIR_FUELS_ISSUED))),
+            ln_DEPARTURES_SCHEDULED = log(sum(exp(ln_DEPARTURES_SCHEDULED))),
+            ln_AIR_TIME = log(sum(exp(ln_AIR_TIME))),
+            ln_DISTANCE = log(sum(exp(ln_DISTANCE))))
 
 # '721'='A321'
 # df<- read_xlsx('database2010_2019_all.xlsx') %>%
@@ -76,15 +81,11 @@ aircraft_counts <- aggregated_data %>%
 aircraft_counts
 ```
 
-```{r}
-aggregated_data
-```
-
 
 
 ```{r}
 # Recode column names
-colnames(aggregated_data)<- c('aircraft_type', 'ln_fuel', 'ln_number_of_flights', 'ln_airborne_hours', 'ln_distance', 'time' ,'airline_id', 'ln_average_fuel_price', 'ratio')
+colnames(aggregated_data)<- c('aircraft_type', 'time' ,'airline_id', 'ln_fuel', 'ln_number_of_flights', 'ln_airborne_hours', 'ln_distance', 'ln_average_fuel_price', 'ratio')
 aggregated_data <- subset(aggregated_data, select = -c(ratio))
 aggregated_data
 ```
@@ -155,28 +156,214 @@ names<- substr(names,1,2)
 
 aggregated_data$name<- as.factor(names)
 ```
+```{r}
+fuel_lag<- colnames(aggregated_data)[10:17]
+aggregated_data
+```
+
+```{r}
+# Install and load the required package if not already installed
+install.packages("lmtest")
+library(lmtest)
+
+# Assuming 'model' is your linear regression model
+# You can directly pass your model object to dwtest()
+durbin_watson_test <- dwtest(m5)
+
+# View the test results
+print(durbin_watson_test)
+
+
+```
+
 
 
 # Regression
 
 ```{r}
-
 # regression with interaction
-formula4<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours  + name:ln_average_fuel_price + aircraft_type
-m4<- lm(formula = formula4, data=aggregated_data)
+
+m1<- lm(formula = ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price  + 
+           as.factor(aircraft_type) + ln_fuel_price_t_minus_2, data=aggregated_data)
+summary(m1)
+```
+
+```{r}
+r_square<- numeric(0)
+columns<- unlist(lapply(1:8, function(x) paste0('ln_fuel_price_t_minus_', x)))
+for(i in 1:length(columns)){
+  formula<- as.formula(paste(c(formula(m1), columns[i]), collapse = " + "))
+  model<- lm(formula=formula, data=aggregated_data)
+  results<- summary(model)$adj.r.squared
+  r_square<- c(r_square, results)
+}
+
+```
+
+
+
+## Stepwise Regression
+```{r}
+data_for_step<- aggregated_data %>% 
+  select(-one_of(c('airline_id', 'name', 'ln_distance', 'time', 'quater',
+                   'ln_fuel_price_t_minus_5', 'ln_fuel_price_t_minus_6', 'ln_fuel_price_t_minus_7', 'ln_fuel_price_t_minus_8'))) %>%
+  na.omit()
+step_model <- step(lm(ln_fuel ~ ., data = data_for_step), direction = "backward")
+summary(step_model)
+
+```
+
+## Tests on the stepwise regression output
+
+```{r}
+
+
+m1<- lm(formula = ln_fuel ~ ln_number_of_flights + ln_airborne_hours  + 
+           as.factor(aircraft_type) + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=aggregated_data)
+summary(m1)
+
+
+outlier_removed<- aggregated_data[-c(485, 1758, 1760),]
+m1_rm<- lm(formula = ln_fuel ~ ln_number_of_flights + ln_airborne_hours  + 
+           as.factor(aircraft_type) + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=outlier_removed) 
+summary(m1_rm)
+```
+
+
+```{r}
+
+panel_data<- aggregated_data %>%
+  group_by(name, time) %>%
+  summarise(ln_fuel = log(sum(exp(ln_fuel))),
+            ln_number_of_flights = log(sum(exp(ln_number_of_flights))),
+            ln_airborne_hours = log(sum(exp(ln_airborne_hours))),
+            ln_average_fuel_price = mean(ln_average_fuel_price),
+            ln_fuel_price_t_minus_2 = mean(ln_fuel_price_t_minus_2))
+
+panel_data2<- aggregated_data %>%
+  group_by(aircraft_type, time) %>%
+  summarise(ln_fuel = log(sum(exp(ln_fuel))),
+            ln_number_of_flights = log(sum(exp(ln_number_of_flights))),
+            ln_airborne_hours = log(sum(exp(ln_airborne_hours))),
+            ln_average_fuel_price = mean(ln_average_fuel_price),
+            ln_fuel_price_t_minus_2 = mean(ln_fuel_price_t_minus_2))
+
+
+
+
+
+
+panel_df<- pdata.frame(panel_data, index=c('name', 'time'))
+m3<- pggls(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_df, model='random')
+phtest(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_data)
+summary(m3)
+
+
+panel_df2<- pdata.frame(panel_data2, index=c('aircraft_type', 'time'))
+m4<- pggls(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_df2)
+phtest(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_data2)
 summary(m4)
+```
 
-
-formula5<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price  + as.factor(aircraft_type) 
-m5<- lm(formula = formula5, data=aggregated_data)
+```{r}
+aggregated_data_panel<- aggregated_data
+aggregated_data_panel$id<- paste0(aggregated_data_panel$name, aggregated_data_panel$aircraft_type)
+panel_df_3<- pdata.frame(aggregated_data_panel, index=c('id', 'time'))
+m5<- pggls(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_df_3)
 summary(m5)
+```
 
-formula6<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_fuel_price_t_minus_1 + as.factor(aircraft_type) 
-m6<- lm(formula = formula6, data=aggregated_data)
-summary(m6)
+
+
+
+
+
+```{r}
+w<- panel_df_3
+w$key<- row.names(w)
+a<- data.frame(resid(m5))
+a$key<- row.names(a)
+
+w <- w %>% left_join(a, by='key')
+
+airline_results <- c()
+dw_results <- c()
+for(airline in unique(w$id)){
+ 
+  selected_w<- w %>% filter(id == airline) %>% arrange(time)
+  dw<- sum(diff(as.numeric(selected_w$resid.m5.))^2, na.rm=T) / sum(as.numeric(selected_w$resid.m5.)^2, na.rm=T)
+  airline_results <- c(airline_results, airline)
+  dw_results <- c(dw_results, dw)
+    
+  
+}
+dw_results_df <- data.frame(
+  airline = airline_results,
+  durbin_watson_statistic = dw_results
+)
+
+```
+
+
+```{r}
+w<- panel_df2
+w$key<- row.names(w)
+a<- data.frame(resid(m4))
+a$key<- row.names(a)
+
+w <- w %>% left_join(a, by='key')
+
+aircraft_results <- c()
+dw_results <- c()
+for(aircraft in unique(w$aircraft_type)){
+ 
+  selected_w<- w %>% filter(aircraft_type == aircraft) %>% arrange(time)
+  dw<- sum(diff(as.numeric(selected_w$resid.m4.))^2, na.rm=T) / sum(as.numeric(selected_w$resid.m4.)^2, na.rm=T)
+  aircraft_results <- c(aircraft_results, aircraft)
+  dw_results <- c(dw_results, dw)
+    
+  
+}
+dw_results_df <- data.frame(
+  aircraft = aircraft_results,
+  durbin_watson_statistic = dw_results
+)
 
 
 ```
+
+
+
+
+
+
+```{r}
+# Obtain residuals from the model
+residuals <- resid(m1)
+
+# Fitted values
+fitted_values <- fitted(m1)
+
+# Plot residuals vs fitted values
+plot(fitted_values, residuals, 
+     xlab = "Fitted Values", ylab = "Residuals",
+     main = "Residuals vs Fitted Values Plot")
+abline(h = 0, col = "red")  # Add a horizontal line at y = 0 for reference
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
 ```{r}
 
 formula7<- ln_fuel ~  ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + as.factor(aircraft_type) + as.factor(name)
