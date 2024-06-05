@@ -114,7 +114,59 @@ summary(m3)
 ### take out the uninteracted term
 ### add airline effect
   
+## benchmark case 1:
 
+```{r}
+input_df<- panel_df_3
+form1<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_payload + ln_distance + ln_average_fuel_price
+
+# Check if using OLS vs GLS
+bm<- plm(form1, data=input_df)
+bptest(bm)
+
+# Check if FE vs RE
+phtest(form1, input_df)
+bm_r<- pggls(form1, data=input_df, model='pooling')
+
+# Check if needing OC correction
+dwtest(form1, data=input_df)
+
+# Implement OC correction
+error_df = data.frame(bm_r$residuals)
+colnames(error_df)<- 'residuals'
+error_df$index = rownames(error_df)
+
+ocbm<- input_df %>%
+  mutate(index=rownames(input_df)) %>%
+  left_join(error_df, 'index') %>%
+  group_by('name', 'aircraft_type') %>%
+  mutate(prev_val = lag(residuals, 1),
+         ln_fuel_lag = lag(ln_fuel, 1),
+         ln_number_of_flights_lag = lag(ln_number_of_flights, 1),
+         ln_airborne_hours_lag = lag(ln_airborne_hours, 1),
+         ln_payload_lag = lag(ln_payload, 1),
+         ln_distance_lag = lag(ln_distance, 1),
+         ln_average_fuel_price_lag = lag(ln_average_fuel_price, 1))
+
+oc_correct_lm_bm<- lm(residuals~prev_val - 1, data=ocbm)
+rbm<- oc_correct_lm_bm$coefficients
+
+ocbm<- ocbm %>%
+  mutate(ln_fuel = ln_fuel - rbm * ln_fuel_lag, 
+         ln_number_of_flights = ln_number_of_flights - rbm * ln_number_of_flights_lag,
+         ln_airborne_hours = ln_airborne_hours - rbm * ln_airborne_hours_lag,
+         ln_payload = ln_payload - rbm * ln_payload_lag,
+         ln_distance = ln_distance - rbm * ln_distance_lag,
+         ln_average_fuel_price = ln_average_fuel_price - rbm * ln_average_fuel_price_lag)
+
+ocbm<- pdata.frame(ocbm, index=c('id', 'time'))
+
+
+bm_r<- pggls(form1, data=ocbm, model='pooling')
+summary(bm_r)
+
+calc_stats(bm_r)
+```
 
 
 

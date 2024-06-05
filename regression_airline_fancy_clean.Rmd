@@ -4,55 +4,35 @@
 
 ```{r}
 library(tidyverse)
-```
-
-
-```{r}
 library(plm)
 library(readxl)
 library(fastDummies)
 library(car)
-```
-
-```{r}
 library(nlme)
 library(MASS)
+library(lmtest)
 ```
-
 
 ## Data Cleaning
 
 ```{r}
-df<- read_xlsx('database2010_2019_Febcorrect3.xlsx') %>%
+df<- read_xlsx('database2010_2019_Febcorrect3_ALBERT.xlsx') %>%
         dplyr::select(AIRCRAFT_TYPE, ln_AIR_FUELS_ISSUED,
-        ln_DEPARTURES_SCHEDULED, ln_AIR_TIME, ln_DISTANCE,
-        time, AIRLINE_ID) %>%
+        ln_DEPARTURES_PERFORMED, ln_AIR_TIME, ln_DISTANCE,
+        ln_PAYLOAD, time, AIRLINE_ID) %>%
   dplyr::mutate(AIRCRAFT_TYPE=dplyr::recode(AIRCRAFT_TYPE, '612'='B737-700', '614'='B737-800', '634'='B737-900','698'='A319', '694'='A320', '622'='B757-200','626'='B767-300', '627'='B777','637'='B777')) %>%
   group_by(AIRCRAFT_TYPE, time, AIRLINE_ID) %>%
   summarise(ln_AIR_FUELS_ISSUED = log(sum(exp(ln_AIR_FUELS_ISSUED))),
-            ln_DEPARTURES_SCHEDULED = log(sum(exp(ln_DEPARTURES_SCHEDULED))),
+            ln_DEPARTURES_PERFORMED = log(sum(exp(ln_DEPARTURES_PERFORMED))),
             ln_AIR_TIME = log(sum(exp(ln_AIR_TIME))),
-            ln_DISTANCE = log(sum(exp(ln_DISTANCE))))
-
-# '721'='A321'
-# df<- read_xlsx('database2010_2019_all.xlsx') %>%
-#   select(AIRCRAFT_TYPE, ln_AIR_FUELS_ISSUED,
-#         ln_DEPARTURES_SCHEDULED, ln_AIR_TIME,
-#         time, AIRLINE_ID) %>%
-#   mutate(AIRCRAFT_TYPE=recode(AIRCRAFT_TYPE, '622'='B757-200', '627'='B777','637'='B777','339'='A330', '343'='A330','824'='A330','359'='A350','836'='A350','882'='A380'))
-
-# wide body
-
-
+            ln_DISTANCE = log(sum(exp(ln_DISTANCE))),
+            ln_PAYLOAD = log(sum(exp(ln_PAYLOAD))))
 df <- subset(df, !is.na(AIRCRAFT_TYPE))
-
 ```
 
 
 
 ```{r}
-
-
 # Load ppi data and recode the month into quarters and calculate the inflation rate (ratio)
 ppi<- read_csv('ppi.csv') %>%
   pivot_longer(-Year, names_to = 'Month', values_to = 'ppi') %>%
@@ -91,7 +71,7 @@ aircraft_counts
 
 ```{r}
 # Recode column names
-colnames(aggregated_data)<- c('aircraft_type', 'time' ,'airline_id', 'ln_fuel', 'ln_number_of_flights', 'ln_airborne_hours', 'ln_distance', 'ln_average_fuel_price', 'ratio')
+colnames(aggregated_data)<- c('aircraft_type', 'time' ,'airline_id', 'ln_fuel', 'ln_number_of_flights', 'ln_airborne_hours', 'ln_distance', 'ln_payload', 'ln_average_fuel_price', 'ratio')
 aggregated_data <- subset(aggregated_data, select = -c(ratio))
 aggregated_data
 ```
@@ -110,17 +90,7 @@ for(i in 1:8){
 
 aggregated_data<- aggregated_data %>%
   mutate(quater = ifelse(time%%4==0, 4, time%%4))
-colnames(aggregated_data)[10:length(colnames(aggregated_data))-1] <- unlist(lapply(1:8, function(x) paste0('ln_fuel_price_t_minus_', x)))
-
-# Create lag for x and y
-lead<- dplyr::lead
-lag<- dplyr::lag
-aggregated_data_change<- aggregated_data %>%
-  dplyr::group_by(aircraft_type) %>%
-  dplyr::mutate(ln_fuel_change = exp(ln_fuel) - exp(lag(ln_fuel)),
-         ln_num_of_flights_change = exp(ln_number_of_flights) - exp(lag(ln_number_of_flights)),
-         ln_airborne_hours_change = exp(ln_airborne_hours) - exp(lag(ln_airborne_hours)),
-         ln_average_fuel_price_change = exp(ln_average_fuel_price) - lag(lead(ln_average_fuel_price)))
+colnames(aggregated_data)[11:length(colnames(aggregated_data))-1] <- unlist(lapply(1:8, function(x) paste0('ln_fuel_price_t_minus_', x)))
 ```
 
 ```{r}
@@ -142,212 +112,676 @@ fuel_lag<- colnames(aggregated_data)[10:17]
 aggregated_data
 ```
 
+
+
 ```{r}
-# Install and load the required package if not already installed
-install.packages("lmtest")
-library(lmtest)
 
-# Assuming 'model' is your linear regression model
-# You can directly pass your model object to dwtest()
-durbin_watson_test <- dwtest(m5)
-
-# View the test results
-print(durbin_watson_test)
+selected_id<- aggregated_data %>%
+  group_by(name, aircraft_type) %>%
+  summarise(n=n()) %>%
+  filter(n>2) 
 
 
+df<- aggregated_data %>%
+  filter(name %in% selected_id$name, aircraft_type %in% selected_id$aircraft_type)
+
+pdf<- aggregated_data
+pdf$id<- paste0(pdf$name, pdf$aircraft_type)
+pdf<- pdata.frame(pdf, index=c('id', 'time'))
+
+sum1<- summary(plm(lm_form, pdf, model='pooling', effect='twoways'))
+
+x<- sum1$residuals
+y<- lag(sum1$residuals)
+
+
+lm_form<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_distance + ln_payload + ln_average_fuel_price + ln_fuel_price_t_minus_1
+lm_model<- lm(lm_form, data=df)
+summary(lm_model)
+
+
+library(lme4)
+formula<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_distance + ln_payload + ln_average_fuel_price + ln_fuel_price_t_minus_1 + as.factor(quater) + (1|airline_id) + (1|aircraft_type) + (1|time)
+model<- lmer(formula, data=df)
+summary(model)
 ```
 
 
 
 # Regression
-
+## Helper Functions
 
 ```{r}
-r_square<- numeric(0)
-columns<- unlist(lapply(1:8, function(x) paste0('ln_fuel_price_t_minus_', x)))
-for(i in 1:length(columns)){
-  formula<- as.formula(paste(c(formula(m1), columns[i]), collapse = " + "))
-  model<- lm(formula=formula, data=aggregated_data)
-  results<- summary(model)$adj.r.squared
-  r_square<- c(r_square, results)
+calc_stats<- function(model, almon, indent=3){
+  m<- summary(model)
+  sse<- m$ssr
+  sst<- m$tss
+  n<- m$df.residual+length(m$coefficients)
+  k<- length(m$coefficients)+1
+  
+  num<- sse/(n-k)
+  d<- sst/(n-1)
+  adjust_r_square<- 1- num/d
+  
+  rmse<- sqrt(sse/n)
+  AIC<- n * log(sse/n) + 2*k
+  
+  print(paste0('adjusted rsqured: ', adjust_r_square))
+  print(paste0('AIC: ', AIC))
+  print(paste0('rmse: ', rmse))
+  print(paste0('scaling coefficient: ', sum(m$coefficients[2:5])))
+  
+  vcov_matrix<- vcov(model)
+  coefficient<- coef(model)
+  
+  grad<- rep(0, length(coefficient))
+  grad[2:5]<- 1
+  se<- sqrt(t(grad)%*%vcov_matrix%*%grad)
+  print(paste0('scaling coefficient se: ', se))
+  
+  if(almon==FALSE){
+   # A<- diag(1, length(coefficient)-5)
+    A<- diag(1, length(coefficient)-5-indent)
+  }else{
+    A<- almon
+  }
+
+
+ # fuel_price_coef<- m$coefficients[6:length(m$coefficients)]
+
+  fuel_price_coef<- m$coefficients[(6+indent):length(m$coefficients)]
+  
+
+  
+  print(A)
+  print(fuel_price_coef)
+  fuel_price_coef<- A %*% fuel_price_coef
+  print('fuel price lag coefficient')
+  print(fuel_price_coef)
+  print(paste0('fuel price combined effects: ', sum(fuel_price_coef)))
+  
+  #vcov_matrix_fuel_price<- vcov_matrix[6:nrow(vcov_matrix), 6:nrow(vcov_matrix)]
+
+
+  vcov_matrix_fuel_price<- vcov_matrix[(6+indent):nrow(vcov_matrix), (6+indent):nrow(vcov_matrix)]
+
+  
+  
+  vcov_matrix_fuel_price<- A%*%vcov_matrix_fuel_price%*%t(A)
+  grad<- rep(1, nrow(vcov_matrix_fuel_price))
+  se<- sqrt(t(grad)%*%vcov_matrix_fuel_price%*%grad)
+  print(paste0('fuel price combined effect se: ', se))
 }
 
+
+get_A_matrix<- function(order, k){
+  A<- matrix(0, nrow=k+1, ncol=order+1)
+  for(i in 0:k){
+    A[i+1,]<- sapply(0:order, function(p) i^p)
+  }
+  A
+}
+
+almon_lag<- function(data, A){
+  k<- nrow(A)-1  
+  
+  X<- data %>% 
+    dplyr::select(ln_average_fuel_price, ln_fuel_price_t_minus_1, ln_fuel_price_t_minus_2, ln_fuel_price_t_minus_3, ln_fuel_price_t_minus_4) %>%
+    as.matrix()
+  almon_df<- as.data.frame(X[1:nrow(X),1:nrow(A)] %*% A)
+  
+  data<- cbind(data, almon_df)
+ 
+  data
+}
 ```
 
-
-
-## Stepwise Regression
-```{r}
-data_for_step<- aggregated_data %>% 
-  dplyr::select(-one_of(c('airline_id', 'name', 'ln_distance', 'time', 'quater',
-                   'ln_fuel_price_t_minus_5', 'ln_fuel_price_t_minus_6', 'ln_fuel_price_t_minus_7', 'ln_fuel_price_t_minus_8'))) %>%
-  na.omit()
-step_model <- step(lm(ln_fuel ~ ., data = data_for_step), direction = "backward")
-summary(step_model)
-
-```
-
-## Tests on the stepwise regression output
-
-
-```{r}
-
-panel_data<- aggregated_data %>%
-  group_by(name, time) %>%
-  summarise(ln_fuel = log(sum(exp(ln_fuel))),
-            ln_number_of_flights = log(sum(exp(ln_number_of_flights))),
-            ln_airborne_hours = log(sum(exp(ln_airborne_hours))),
-            ln_average_fuel_price = mean(ln_average_fuel_price),
-            ln_fuel_price_t_minus_2 = mean(ln_fuel_price_t_minus_2))
-
-panel_data2<- aggregated_data %>%
-  group_by(aircraft_type, time) %>%
-  summarise(ln_fuel = log(sum(exp(ln_fuel))),
-            ln_number_of_flights = log(sum(exp(ln_number_of_flights))),
-            ln_airborne_hours = log(sum(exp(ln_airborne_hours))),
-            ln_average_fuel_price = mean(ln_average_fuel_price),
-            ln_fuel_price_t_minus_2 = mean(ln_fuel_price_t_minus_2))
-
-
-
-
-
-
-panel_df<- pdata.frame(panel_data, index=c('name', 'time'))
-m3<- pggls(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_df, model='random')
-phtest(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_data)
-summary(m3)
-
-
-panel_df2<- pdata.frame(panel_data2, index=c('aircraft_type', 'time'))
-m4<- pggls(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_df2)
-phtest(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_data2)
-summary(m4)
-```
+## Dataset Filtering
 
 ```{r}
 aggregated_data_panel<- aggregated_data
 aggregated_data_panel$id<- paste0(aggregated_data_panel$name, aggregated_data_panel$aircraft_type)
-panel_df_3<- pdata.frame(aggregated_data_panel, index=c('id', 'time'))
-m5<- pggls(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_average_fuel_price + ln_fuel_price_t_minus_2, data=panel_df_3)
-summary(m5)
-```
+panel_df<- pdata.frame(aggregated_data_panel, index=c('id', 'time'))
 
-```{r}
-panel_df_3
-```
-·
+lag<- dplyr::lag
+panel_df<- pdata.frame(aggregated_data_panel %>% 
+  filter(!is.na(ln_fuel_price_t_minus_4)), index=c('id', 'time'))
 
-## Step Wise Regression
-```{r}
-panel_df_3_clean <- na.omit(panel_df_3)
-full_model <- gls(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_distance+ ln_average_fuel_price + ln_fuel_price_t_minus_1 + ln_fuel_price_t_minus_2 + ln_fuel_price_t_minus_3 + ln_fuel_price_t_minus_4 + ln_fuel_price_t_minus_5 + ln_fuel_price_t_minus_6 + ln_fuel_price_t_minus_7 + ln_fuel_price_t_minus_8, data = panel_df_3_clean, method = "ML")
+selected_id<- panel_df %>%
+  group_by(id) %>%
+  summarise(n=n()) %>%
+  filter(n>2) 
 
-optimal_model <- stepAIC(full_model, direction = "backward")
 
-summary(optimal_model)
-
-```
-
-```{r}
-aggregated_data_panel<- aggregated_data
-aggregated_data_panel$id<- paste0(aggregated_data_panel$name, aggregated_data_panel$aircraft_type)
-panel_df_3<- pdata.frame(aggregated_data_panel, index=c('id', 'time'))
-m6<- pggls(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_fuel_price_t_minus_2, data=panel_df_3)
-phtest(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_fuel_price_t_minus_2, data=panel_df_3)
-summary(m6)
+panel_df<- panel_df %>%
+  filter(id %in% selected_id$id)
 ```
 
 
+
 ```{r}
-aggregated_data_panel<- aggregated_data
-aggregated_data_panel$id<- paste0(aggregated_data_panel$name, aggregated_data_panel$aircraft_type)
-panel_df_3<- pdata.frame(aggregated_data_panel, index=c('id', 'time'))
-m7<- pggls(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_fuel_price_t_minus_2 + ln_fuel_price_t_minus_8, data=panel_df_3)
-phtest(ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_fuel_price_t_minus_2 + ln_fuel_price_t_minus_8 , data=panel_df_3)
-summary(m7)
+
+panel_df
+
 ```
-
-
 ```{r}
-w<- panel_df_3
-w$key<- row.names(w)
-a<- data.frame(resid(m5))
-a$key<- row.names(a)
-
-w <- w %>% left_join(a, by='key')
-
-airline_results <- c()
-dw_results <- c()
-for(airline in unique(w$id)){
- 
-  selected_w<- w %>% filter(id == airline) %>% arrange(time)
-  dw<- sum(diff(as.numeric(selected_w$resid.m5.))^2, na.rm=T) / sum(as.numeric(selected_w$resid.m5.)^2, na.rm=T)
-  airline_results <- c(airline_results, airline)
-  dw_results <- c(dw_results, dw)
-    
+run_regression<- function(input_df, form, estimation, order, k, oc=FALSE, indent=3){
+  if(k < order){
+    stop('k must be greater than order')
+  }
   
-}
-dw_results_df <- data.frame(
-  airline = airline_results,
-  durbin_watson_statistic = dw_results
-)
+  A<- get_A_matrix(order, k)
+  input_df<- pdata.frame(almon_lag(input_df, A), index=c('id', 'time'))
+  
+  print(colnames(input_df))
+  
+  # Check if using OLS vs GLS
+  bm<- plm(form, input_df)
+  print('Checking if need to use GLS')
+  print(bptest(bm))
 
+  bm_r<- pggls(form, input_df, model='pooling')
+
+  # Implement OC correction
+  error_df = data.frame(bm_r$residuals)
+  colnames(error_df)<- 'residuals'
+  error_df$index = rownames(error_df)
+  
+  ocbm<- input_df %>%
+    mutate(index=rownames(input_df)) %>%
+    left_join(error_df, by='index') %>%
+    group_by('name', 'aircraft_type') %>%
+    mutate(prev_val = lag(residuals, 1),
+           ln_fuel_lag = lag(ln_fuel, 1),
+           ln_number_of_flights_lag = lag(ln_number_of_flights, 1),
+           ln_airborne_hours_lag = lag(ln_airborne_hours, 1),
+           ln_payload_lag = lag(ln_payload, 1),
+           ln_distance_lag = lag(ln_distance, 1))
+  
+  if(order == 0){
+    ocbm<- ocbm %>%
+      group_by('name', 'aircraft_type') %>%
+      mutate(V1_lag = lag(V1, 1))
+  }else if(order == 1){
+    ocbm<- ocbm %>%
+      group_by('name', 'aircraft_type') %>%
+      mutate(V1_lag = lag(V1, 1),
+             V2_lag = lag(V2, 1))
+  }else if(order == 2){
+    ocbm<- ocbm %>%
+      group_by('name', 'aircraft_type') %>%
+      mutate(V1_lag = lag(V1, 1),
+             V2_lag = lag(V2, 1),
+             V3_lag = lag(V3, 1))
+  }else if(order == 3){
+    ocbm<- ocbm %>%
+      group_by('name', 'aircraft_type') %>%
+      mutate(V1_lag = lag(V1, 1),
+             V2_lag = lag(V2, 1),
+             V3_lag = lag(V3, 1),
+             V4_lag = lag(V4, 1))
+  }else if(order == 4){
+    ocbm<- ocbm %>%
+      group_by('name', 'aircraft_type') %>%
+      mutate(V1_lag = lag(V1, 1),
+             V2_lag = lag(V2, 1),
+             V3_lag = lag(V3, 1),
+             V4_lag = lag(V4, 1),
+             V5_lag = lag(V5, 1))
+  }
+  
+  oc_correct_lm_bm<- lm(residuals~prev_val - 1, data=ocbm)
+  rbm<- oc_correct_lm_bm$coefficients
+  
+  # Turn OC correction off
+  if(oc==FALSE){
+    rbm<- 0
+  }
+
+  ocbm<- ocbm %>%
+    mutate(ln_fuel = ln_fuel - rbm * ln_fuel_lag, 
+           ln_number_of_flights = ln_number_of_flights - rbm * ln_number_of_flights_lag,
+           ln_airborne_hours = ln_airborne_hours - rbm * ln_airborne_hours_lag,
+           ln_payload = ln_payload - rbm * ln_payload_lag,
+           ln_distance = ln_distance - rbm * ln_distance_lag)
+  
+  if (order == 0){
+    ocbm<- ocbm %>%
+      mutate(V1 = V1 - rbm * V1_lag)
+  }else if(order == 1){
+    ocbm<- ocbm %>%
+      mutate(V1 = V1 - rbm * V1_lag,
+             V2 = V2 - rbm * V2_lag)
+  }else if(order == 2){
+    ocbm<- ocbm %>%
+      mutate(V1 = V1 - rbm * V1_lag,
+             V2 = V2 - rbm * V2_lag,
+             V3 = V3 - rbm * V3_lag)
+  }else if(order == 3){
+    ocbm<- ocbm %>%
+      mutate(V1 = V1 - rbm * V1_lag,
+             V2 = V2 - rbm * V2_lag,
+             V3 = V3 - rbm * V3_lag,
+             V4 = V4 - rbm * V4_lag)
+  }else if(order == 4){
+    ocbm<- ocbm %>%
+      mutate(V1 = V1 - rbm * V1_lag,
+             V2 = V2 - rbm * V2_lag,
+             V3 = V3 - rbm * V3_lag,
+             V4 = V4 - rbm * V4_lag,
+             V5 = V5 - rbm * V5_lag)
+  }
+  
+  ocbm<- pdata.frame(ocbm, index=c('id', 'time'))
+  
+  bm_r<- pggls(form, data=ocbm, model='pooling')
+  print(summary(bm_r))
+
+  calc_stats(bm_r, A)
+  return(bm_r)
+}
 ```
 
+## Incorporating Almon Distributed Lags
 
 ```{r}
-w<- panel_df2
-w$key<- row.names(w)
-a<- data.frame(resid(m6))
-a$key<- row.names(a)
 
-w <- w %>% left_join(a, by='key')
 
-aircraft_results <- c()
-dw_results <- c()
-for(aircraft in unique(w$aircraft_type)){
- 
-  selected_w<- w %>% filter(aircraft_type == aircraft) %>% arrange(time)
-  dw<- sum(diff(as.numeric(selected_w$resid.m6.))^2, na.rm=T) / sum(as.numeric(selected_w$resid.m6.)^2, na.rm=T)
-  aircraft_results <- c(aircraft_results, aircraft)
-  dw_results <- c(dw_results, dw)
-    
+# Check if FE vs RE
+# phtest(form, input_df)
   
-}
-dw_results_df <- data.frame(
-  aircraft = aircraft_results,
-  durbin_watson_statistic = dw_results
-)
+# Check if needing OC correction
+# dwtest(form, input_df)
+  
+m1<- run_regression(panel_df, ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_payload + ln_distance + as.factor(quater) + V1 + V2, order=1, k=3, indent=3, oc=F)
 
+
+plot(m1$residuals, lag(m1$residuals, 1), main='Residuals vs Residuals Lag 1 (Order=1, K=3, GLS+ALMON)', xlab='Residuals', ylab='Residuals Lag 1')
 
 ```
+
+
+## Check the structure of heteroscedacity
 
 ```{r}
-w<- panel_df_3
-w$key<- row.names(w)
-a<- data.frame(resid(m7))
-a$key<- row.names(a)
 
-w <- w %>% left_join(a, by='key')
+formula <- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_distance + ln_payload + as.factor(quater) +  ln_average_fuel_price + ln_fuel_price_t_minus_1 
 
-airline_results <- c()
-dw_results <- c()
-for(airline in unique(w$id)){
- 
-  selected_w<- w %>% filter(id == airline) %>% arrange(time)
-  dw<- sum(diff(as.numeric(selected_w$resid.m7.))^2, na.rm=T) / sum(as.numeric(selected_w$resid.m7.)^2, na.rm=T)
-  airline_results <- c(airline_results, airline)
-  dw_results <- c(dw_results, dw)
-    
+plm_model <- plm(formula, data = panel_df, index = c("id", "time"), model = "within")
+panel_df$residuals <- residuals(plm_model)
+
+vcov_cluster_both <- vcovHC(plm_model, type = "HC1", cluster = c("group", "time"))
+summary(plm_model, vcov = vcov_cluster_both)
+
+
+# Calculate variance of residuals within each group
+group_variances <- tapply(panel_df$residuals, panel_df$id, var)
+plot(group_variances, main = "Variance of residuals within each group", xlab = "Group", ylab = "Variance")
+
+
+time_variances <- tapply(panel_df$residuals, panel_df$time, var)
+plot(time_variances, main = "Variance of residuals within each time period", xlab = "Time", ylab = "Variance")
+```
+```{r}
+calc_stats_for_ols<- function(m){
+
+  sse<- sum(m$residuals^2)
+  n<- m$df[1] + m$df[2]
+  k<- m$df[2]
+
   
+  rmse<- sqrt(sse/n)
+  AIC<- n * log(sse/n) + 2*k
+  
+  
+  print(paste0('adjusted rsqured: ', m$r.squared[2]))
+  print(paste0('AIC: ', AIC))
+  print(paste0('rmse: ', rmse))
+  print(paste0('scaling coefficient: ', sum(m$coefficients[,1][1:4])))
+  
+  grad<- rep(0, length(m$coefficients[,1]))
+  grad[1:4]<- 1
+  vcov<- m$vcov
+  se<- sqrt(t(grad)%*%vcov%*%grad)
+  print(paste0('scaling coefficient se: ', se))
+  
+  
+  print(paste0('fuel price combined effect: ', sum(m$coefficients[,1][8:length(m$coefficients[,1])])))
+  grad<- rep(0, length(m$coefficients[,1]))
+  grad[8:length(m$coefficients[,1])]<- 1
+  se<- sqrt(t(grad)%*%vcov%*%grad)
+  print(paste0('fuel price combined effect se: ', se))
 }
-dw_results_df <- data.frame(
-  airline = airline_results,
-  durbin_watson_statistic = dw_results
-)
 
 ```
+
+## benchmark case 1:
+
+```{r}
+input_df<- panel_df
+form1<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_payload + ln_distance + as.factor(quater) + ln_average_fuel_price
+
+# Check if using OLS vs GLS
+bm<- plm(form1, data=input_df)
+bptest(bm)
+
+# Check if FE vs RE
+phtest(form1, input_df)
+bm_r<- pggls(form1, data=input_df, model='pooling')
+bm_r<- plm(form1, input_df, index = c("id", "time"), model = "within")
+
+# Check if needing OC correction
+dwtest(form1, data=input_df)
+
+# Implement OC correction
+error_df = data.frame(bm_r$residuals)
+colnames(error_df)<- 'residuals'
+error_df$index = rownames(error_df)
+
+ocbm<- input_df %>%
+  mutate(index=rownames(input_df)) %>%
+  left_join(error_df, 'index') %>%
+  group_by('name', 'aircraft_type') %>%
+  mutate(prev_val = lag(residuals, 1),
+         ln_fuel_lag = lag(ln_fuel, 1),
+         ln_number_of_flights_lag = lag(ln_number_of_flights, 1),
+         ln_airborne_hours_lag = lag(ln_airborne_hours, 1),
+         ln_payload_lag = lag(ln_payload, 1),
+         ln_distance_lag = lag(ln_distance, 1),
+         ln_average_fuel_price_lag = lag(ln_average_fuel_price, 1))
+
+oc_correct_lm_bm<- lm(residuals~prev_val - 1, data=ocbm)
+rbm<- oc_correct_lm_bm$coefficients
+
+ocbm<- ocbm %>%
+  mutate(ln_fuel = ln_fuel - rbm * ln_fuel_lag, 
+         ln_number_of_flights = ln_number_of_flights - rbm * ln_number_of_flights_lag,
+         ln_airborne_hours = ln_airborne_hours - rbm * ln_airborne_hours_lag,
+         ln_payload = ln_payload - rbm * ln_payload_lag,
+         ln_distance = ln_distance - rbm * ln_distance_lag,
+         ln_average_fuel_price = ln_average_fuel_price - rbm * ln_average_fuel_price_lag)
+
+ocbm<- pdata.frame(ocbm, index=c('id', 'time'))
+
+
+bm_r<- pggls(form1, data=ocbm, model='pooling')
+bm_r<- plm(form1, ocbm, index = c("id", "time"), model = "within")
+summary(bm_r, vcov=vcovHC(bm_r, type="HC1"))
+calc_stats_for_ols(summary(bm_r, vcov=vcovHC(bm_r, type="HC1")))
+#calc_stats(bm_r, estimate = 'OLS', almon = FALSE)
+```
+
+
+
+
+
+## benchmark case 2:
+
+```{r}
+input_df<- panel_df
+form1<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_payload + ln_distance + as.factor(quater) +  ln_average_fuel_price + ln_fuel_price_t_minus_1
+
+# Check if using OLS vs GLS
+bm<- plm(form1, data=input_df)
+bptest(bm)
+
+# Check if FE vs RE
+phtest(form1, input_df)
+bm_r<- pggls(form1, data=input_df, model='pooling')
+bm_r<- plm(form1, input_df, index = c("id", "time"), model = "within")
+
+# Check if needing OC correction
+dwtest(form1, data=panel_df)
+
+# Implement OC correction
+error_df = data.frame(bm_r$residuals)
+colnames(error_df)<- 'residuals'
+error_df$index = rownames(error_df)
+
+ocbm<- input_df %>%
+  mutate(index=rownames(input_df)) %>%
+  left_join(error_df, 'index') %>%
+  group_by('name', 'aircraft_type') %>%
+  mutate(prev_val = lag(residuals, 1),
+         ln_fuel_lag = lag(ln_fuel, 1),
+         ln_number_of_flights_lag = lag(ln_number_of_flights, 1),
+         ln_airborne_hours_lag = lag(ln_airborne_hours, 1),
+         ln_payload_lag = lag(ln_payload, 1),
+         ln_distance_lag = lag(ln_distance, 1),
+         ln_average_fuel_price_lag = lag(ln_average_fuel_price, 1),
+         ln_fuel_price_t_minus_1_lag = lag(ln_fuel_price_t_minus_1, 1))
+
+oc_correct_lm_bm<- lm(residuals~prev_val - 1, data=ocbm)
+rbm<- oc_correct_lm_bm$coefficients
+
+ocbm<- ocbm %>%
+  mutate(ln_fuel = ln_fuel - rbm * ln_fuel_lag, 
+         ln_number_of_flights = ln_number_of_flights - rbm * ln_number_of_flights_lag,
+         ln_airborne_hours = ln_airborne_hours - rbm * ln_airborne_hours_lag,
+         ln_payload = ln_payload - rbm * ln_payload_lag,
+         ln_distance = ln_distance - rbm * ln_distance_lag,
+         ln_average_fuel_price = ln_average_fuel_price - rbm * ln_average_fuel_price_lag,
+         ln_fuel_price_t_minus_1 = ln_fuel_price_t_minus_1 - rbm * ln_fuel_price_t_minus_1_lag)
+
+ocbm<- pdata.frame(ocbm, index=c('id', 'time'))
+
+
+bm_r<- pggls(form1, data=ocbm, model='pooling')
+bm_r<- plm(form1, ocbm, index = c("id", "time"), model = "within")
+summary(bm_r, vcov=vcovHC(bm_r, type="HC1"))
+calc_stats_for_ols(summary(bm_r, vcov=vcovHC(bm_r, type="HC1")))
+```
+
+
+## benchmark case 3:
+
+```{r}
+input_df<- panel_df
+form1<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_payload + ln_distance + as.factor(quater) + ln_average_fuel_price + ln_fuel_price_t_minus_1 + ln_fuel_price_t_minus_2
+
+# Check if using OLS vs GLS
+bm<- plm(form1, data=input_df)
+bptest(bm)
+
+# Check if FE vs RE
+phtest(form1, input_df)
+bm_r<- pggls(form1, data=input_df, model='pooling')
+bm_r<- plm(form1, input_df, index = c("id", "time"), model = "within")
+
+# Check if needing OC correction
+dwtest(form1, data=input_df)
+
+# Implement OC correction
+error_df = data.frame(bm_r$residuals)
+colnames(error_df)<- 'residuals'
+error_df$index = rownames(error_df)
+
+ocbm<- input_df %>%
+  mutate(index=rownames(input_df)) %>%
+  left_join(error_df, 'index') %>%
+  group_by('name', 'aircraft_type') %>%
+  mutate(prev_val = lag(residuals, 1),
+         ln_fuel_lag = lag(ln_fuel, 1),
+         ln_number_of_flights_lag = lag(ln_number_of_flights, 1),
+         ln_airborne_hours_lag = lag(ln_airborne_hours, 1),
+         ln_payload_lag = lag(ln_payload, 1),
+         ln_distance_lag = lag(ln_distance, 1),
+         ln_average_fuel_price_lag = lag(ln_average_fuel_price, 1),
+         ln_fuel_price_t_minus_1_lag = lag(ln_fuel_price_t_minus_1, 1),
+         ln_fuel_price_t_minus_2_lag = lag(ln_fuel_price_t_minus_2, 1))
+
+oc_correct_lm_bm<- lm(residuals~prev_val - 1, data=ocbm)
+rbm<- oc_correct_lm_bm$coefficients
+
+
+ocbm<- ocbm %>%
+  mutate(ln_fuel = ln_fuel - rbm * ln_fuel_lag, 
+         ln_number_of_flights = ln_number_of_flights - rbm * ln_number_of_flights_lag,
+         ln_airborne_hours = ln_airborne_hours - rbm * ln_airborne_hours_lag,
+         ln_payload = ln_payload - rbm * ln_payload_lag,
+         ln_distance = ln_distance - rbm * ln_distance_lag,
+         ln_average_fuel_price = ln_average_fuel_price - rbm * ln_average_fuel_price_lag,
+         ln_fuel_price_t_minus_1 = ln_fuel_price_t_minus_1 - rbm * ln_fuel_price_t_minus_1_lag,
+         ln_fuel_price_t_minus_2 = ln_fuel_price_t_minus_2 - rbm * ln_fuel_price_t_minus_2_lag)
+
+ocbm<- pdata.frame(ocbm, index=c('id', 'time'))
+
+
+bm_r<- pggls(form1, data=ocbm, model='pooling')
+bm_r<- plm(form1, ocbm, index = c("id", "time"), model = "within")
+
+summary(bm_r, vcov=vcovHC(bm_r, type="HC1"))
+calc_stats_for_ols(summary(bm_r, vcov=vcovHC(bm_r, type="HC1")))
+
+
+##### Getting AutoCorr
+error_df = data.frame(bm_r$residuals)
+colnames(error_df)<- 'residuals'
+error_df$index = rownames(error_df)
+
+ocbm<- input_df %>%
+  mutate(index=rownames(input_df)) %>%
+  left_join(error_df, 'index') %>%
+  group_by('name', 'aircraft_type') %>%
+  mutate(prev_val = lag(residuals, 1))
+plot(as.numeric(ocbm$prev_val), as.numeric(ocbm$residuals), main='Auto Correlation in Residuals in BM3', xlab='Previous Residuals', ylab='Residuals')
+
+```
+
+
+## benchmark case 4:
+
+```{r}
+input_df<- panel_df
+form1<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_payload + ln_distance + as.factor(quater) + ln_average_fuel_price + ln_fuel_price_t_minus_1 + ln_fuel_price_t_minus_2 + ln_fuel_price_t_minus_3
+
+# Check if using OLS vs GLS
+bm<- plm(form1, data=input_df)
+bptest(bm)
+
+# Check if FE vs RE
+phtest(form1, input_df)
+bm_r<- pggls(form1, data=input_df, model='pooling')
+bm_r<- plm(form1, input_df, index = c("id", "time"), model = "within")
+
+# Check if needing OC correction
+dwtest(form1, data=input_df)
+
+# Implement OC correction
+error_df = data.frame(bm_r$residuals)
+colnames(error_df)<- 'residuals'
+error_df$index = rownames(error_df)
+
+ocbm<- input_df %>%
+  mutate(index=rownames(input_df)) %>%
+  left_join(error_df, 'index') %>%
+  group_by('name', 'aircraft_type') %>%
+  mutate(prev_val = lag(residuals, 1),
+         ln_fuel_lag = lag(ln_fuel, 1),
+         ln_number_of_flights_lag = lag(ln_number_of_flights, 1),
+         ln_airborne_hours_lag = lag(ln_airborne_hours, 1),
+         ln_payload_lag = lag(ln_payload, 1),
+         ln_distance_lag = lag(ln_distance, 1),
+         ln_average_fuel_price_lag = lag(ln_average_fuel_price, 1),
+         ln_fuel_price_t_minus_1_lag = lag(ln_fuel_price_t_minus_1, 1),
+         ln_fuel_price_t_minus_2_lag = lag(ln_fuel_price_t_minus_2, 1),
+         ln_fuel_price_t_minus_3_lag = lag(ln_fuel_price_t_minus_3, 1))
+
+oc_correct_lm_bm<- lm(residuals~prev_val - 1, data=ocbm)
+rbm<- oc_correct_lm_bm$coefficients
+
+ocbm<- ocbm %>%
+  mutate(ln_fuel = ln_fuel - rbm * ln_fuel_lag, 
+         ln_number_of_flights = ln_number_of_flights - rbm * ln_number_of_flights_lag,
+         ln_airborne_hours = ln_airborne_hours - rbm * ln_airborne_hours_lag,
+         ln_payload = ln_payload - rbm * ln_payload_lag,
+         ln_distance = ln_distance - rbm * ln_distance_lag,
+         ln_average_fuel_price = ln_average_fuel_price - rbm * ln_average_fuel_price_lag,
+         ln_fuel_price_t_minus_1 = ln_fuel_price_t_minus_1 - rbm * ln_fuel_price_t_minus_1_lag,
+         ln_fuel_price_t_minus_2 = ln_fuel_price_t_minus_2 - rbm * ln_fuel_price_t_minus_2_lag,
+         ln_fuel_price_t_minus_3 = ln_fuel_price_t_minus_3 - rbm * ln_fuel_price_t_minus_3_lag)
+
+ocbm<- pdata.frame(ocbm, index=c('id', 'time'))
+
+
+bm_r<- pggls(form1, data=ocbm, model='pooling')
+bm_r<- plm(form1, ocbm, index = c("id", "time"), model = "within")
+
+summary(bm_r, vcov=vcovHC(bm_r, type="HC1"))
+
+calc_stats_for_ols(summary(bm_r, vcov=vcovHC(bm_r, type="HC1")))
+
+
+```
+
+
+## benchmark case 5:
+
+```{r}
+input_df<- panel_df
+form1<- ln_fuel ~ ln_number_of_flights + ln_airborne_hours + ln_payload + ln_distance + as.factor(quater) + ln_average_fuel_price + ln_fuel_price_t_minus_1 + ln_fuel_price_t_minus_2 + ln_fuel_price_t_minus_3 + ln_fuel_price_t_minus_4
+
+# Check if using OLS vs GLS
+bm<- plm(form1, data=input_df)
+bptest(bm)
+
+# Check if FE vs RE
+phtest(form1, input_df)
+bm_r<- pggls(form1, data=input_df, model='pooling')
+bm_r<- plm(form1, input_df, index = c("id", "time"), model = "within")
+
+# Check if needing OC correction
+dwtest(form1, data=input_df)
+
+# Implement OC correction
+error_df = data.frame(bm_r$residuals)
+colnames(error_df)<- 'residuals'
+error_df$index = rownames(error_df)
+
+ocbm<- input_df %>%
+  mutate(index=rownames(input_df)) %>%
+  left_join(error_df, 'index') %>%
+  group_by('name', 'aircraft_type') %>%
+  mutate(prev_val = lag(residuals, 1),
+         ln_fuel_lag = lag(ln_fuel, 1),
+         ln_number_of_flights_lag = lag(ln_number_of_flights, 1),
+         ln_airborne_hours_lag = lag(ln_airborne_hours, 1),
+         ln_payload_lag = lag(ln_payload, 1),
+         ln_distance_lag = lag(ln_distance, 1),
+         ln_average_fuel_price_lag = lag(ln_average_fuel_price, 1),
+         ln_fuel_price_t_minus_1_lag = lag(ln_fuel_price_t_minus_1, 1),
+         ln_fuel_price_t_minus_2_lag = lag(ln_fuel_price_t_minus_2, 1),
+         ln_fuel_price_t_minus_3_lag = lag(ln_fuel_price_t_minus_3, 1),
+         ln_fuel_price_t_minus_4_lag = lag(ln_fuel_price_t_minus_4, 1))
+
+oc_correct_lm_bm<- lm(residuals~prev_val - 1, data=ocbm)
+rbm<- oc_correct_lm_bm$coefficients
+
+
+ocbm<- ocbm %>%
+  mutate(ln_fuel = ln_fuel - rbm * ln_fuel_lag, 
+         ln_number_of_flights = ln_number_of_flights - rbm * ln_number_of_flights_lag,
+         ln_airborne_hours = ln_airborne_hours - rbm * ln_airborne_hours_lag,
+         ln_payload = ln_payload - rbm * ln_payload_lag,
+         ln_distance = ln_distance - rbm * ln_distance_lag,
+         ln_average_fuel_price = ln_average_fuel_price - rbm * ln_average_fuel_price_lag,
+         ln_fuel_price_t_minus_1 = ln_fuel_price_t_minus_1 - rbm * ln_fuel_price_t_minus_1_lag,
+         ln_fuel_price_t_minus_2 = ln_fuel_price_t_minus_2 - rbm * ln_fuel_price_t_minus_2_lag,
+         ln_fuel_price_t_minus_3 = ln_fuel_price_t_minus_3 - rbm * ln_fuel_price_t_minus_3_lag,
+         ln_fuel_price_t_minus_4 = ln_fuel_price_t_minus_4 - rbm * ln_fuel_price_t_minus_4_lag)
+
+ocbm<- pdata.frame(ocbm, index=c('id', 'time'))
+
+bm_r<- pggls(form1, data=ocbm, model='pooling')
+bm_r<- plm(form1, ocbm, index = c("id", "time"), model = "within")
+
+summary(bm_r, vcov=vcovHC(bm_r, type="HC1"))
+calc_stats_for_ols(summary(bm_r, vcov=vcovHC(bm_r, type="HC1")))
+
+
+```
+
+
 
 
 

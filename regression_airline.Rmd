@@ -45,8 +45,6 @@ df <- subset(df, !is.na(AIRCRAFT_TYPE))
 
 
 ```{r}
-
-
 # Load ppi data and recode the month into quarters and calculate the inflation rate (ratio)
 ppi<- read_csv('ppi.csv') %>%
   pivot_longer(-Year, names_to = 'Month', values_to = 'ppi') %>%
